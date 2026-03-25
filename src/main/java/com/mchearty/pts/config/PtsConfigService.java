@@ -130,7 +130,7 @@ public class PtsConfigService {
    *
    * @return hash string used to decide whether the runtime pack must be rebuilt
    */
-  public static String calculateConfigHash() {
-    return String.valueOf(EXACT_TARGETS.hashCode() ^ TARGET_NAMESPACES.hashCode() ^ KEYWORD_PATTERN.pattern().hashCode());
+  public static String calculateConfigHash(Set<ResourceLocation> targetIds) {
+    return String.valueOf(targetIds.hashCode() ^ EXACT_TARGETS.hashCode() ^ TARGET_NAMESPACES.hashCode() ^ KEYWORD_PATTERN.pattern().hashCode());
   }
 }

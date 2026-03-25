@@ -15,6 +15,7 @@ import net.minecraft.server.packs.PackType;
 import net.minecraft.server.packs.PathPackResources;
 import net.minecraft.server.packs.repository.Pack;
 import net.minecraft.server.packs.repository.PackSource;
+import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
 import net.neoforged.api.distmarker.Dist;
@@ -26,6 +27,7 @@ import net.neoforged.neoforge.client.event.RegisterColorHandlersEvent;
 import net.neoforged.neoforge.event.AddPackFindersEvent;
 
 import java.util.Optional;
+import java.util.Set;
 
 /**
  * Main entry point for the Procedural Terrain Smoothing (PTS) mod.
@@ -66,6 +68,7 @@ public class PtsMod {
 
     if (FMLEnvironment.dist == Dist.CLIENT) {
       modEventBus.addListener(PtsClient::onBlockColors);
+      modEventBus.addListener(PtsClient::onItemColors);
     }
 
     ModFeatures.FEATURES.register(modEventBus);
@@ -82,7 +85,8 @@ public class PtsMod {
    */
   private void onPackFinder(AddPackFindersEvent event) {
     if (event.getPackType() == PackType.CLIENT_RESOURCES || event.getPackType() == PackType.SERVER_DATA) {
-      PtsDynamicPackEngine.initializePackDirectory();
+      Set<ResourceLocation> snapshot = Set.copyOf(SlabMirrorFactory.PENDING_SLABS.keySet());
+      PtsDynamicPackEngine.generateOrUpdateRuntimePack(snapshot);
 
       PackLocationInfo info = new PackLocationInfo(
           "pts_dynamic",
@@ -110,12 +114,17 @@ public class PtsMod {
    */
   public static class PtsClient {
 
-    /**
-     * Registers a color handler for every generated PTS slab that forwards tint
-     * queries to its mirrored target block.
-     *
-     * @param event the block color registration event
-     */
+  /**
+   * Registers block color handlers for every PTS-generated slab.
+   *
+   * <p>For each slab stored in {@link SlabMirrorFactory#PENDING_SLABS} the method
+   * registers a delegating lambda that forwards the tint query to the original
+   * target block's color provider. This guarantees that grass, leaves, water, and
+   * any other tintable terrain blocks keep their original appearance when converted
+   * into slabs.
+   *
+   * @param event the Forge/NeoForge block color registration event
+   */
     public static void onBlockColors(RegisterColorHandlersEvent.Block event) {
       for (PtsTerrainSlabBlock slab : SlabMirrorFactory.PENDING_SLABS.values()) {
         Block target = slab.getTargetBlock();
@@ -126,6 +135,26 @@ public class PtsMod {
             }
             return -1;
           }, slab);
+        }
+      }
+    }
+
+  /**
+   * Registers item color handlers for every PTS-generated slab item.
+   *
+   * <p>Delegates item tint queries to the target block's item color provider so that
+   * slabs appear with the correct color when held in the inventory, displayed in
+   * item frames, or rendered in GUIs.
+   *
+   * @param event the Forge/NeoForge item color registration event
+   */
+    public static void onItemColors(RegisterColorHandlersEvent.Item event) {
+      for (PtsTerrainSlabBlock slab : SlabMirrorFactory.PENDING_SLABS.values()) {
+        Block target = slab.getTargetBlock();
+        if (target != Blocks.AIR) {
+          event.register((stack, tintIndex) -> {
+            return event.getItemColors().getColor(new ItemStack(target), tintIndex);
+          }, slab.asItem());
         }
       }
     }

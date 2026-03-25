@@ -30,6 +30,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * Runtime resource-pack engine that procedurally generates Minecraft assets for
@@ -82,12 +83,8 @@ public class PtsDynamicPackEngine {
    */
   public static void initializePackDirectory() {
     try {
-      if (!Files.exists(PACK_DIR)) {
-        Files.createDirectories(PACK_DIR);
-      }
-    } catch (Exception ignored) {
-      // Directory creation failure is non-fatal; generation will simply be skipped later.
-    }
+      if (!Files.exists(PACK_DIR)) Files.createDirectories(PACK_DIR);
+    } catch (Exception ignored) {}
   }
 
   /**
@@ -147,7 +144,7 @@ public class PtsDynamicPackEngine {
    */
   public static void generateOrUpdateRuntimePack(Set<ResourceLocation> targetIds) {
     try {
-      String currentHash = PtsConfigService.calculateConfigHash();
+      String currentHash = PtsConfigService.calculateConfigHash(targetIds);
 
       if (Files.exists(PACK_DIR) && Files.exists(HASH_FILE)) {
         String savedHash = Files.readString(HASH_FILE);
@@ -227,19 +224,45 @@ public class PtsDynamicPackEngine {
       JsonObject newVariants = new JsonObject();
       JsonObject variants = originalState.getAsJsonObject("variants");
 
+      String[] types = {"bottom", "top", "double"};
+      String[] bools = {"false", "true"};
+
       for (String key : variants.keySet()) {
         JsonElement variantData = variants.get(key);
+        
+        Map<String, String> props = new HashMap<>();
+        if (!key.isEmpty() && !key.equals("normal")) {
+          for (String part : key.split(",")) {
+            String[] kv = part.split("=");
+            if (kv.length == 2) props.put(kv[0], kv[1]);
+          }
+        }
+        
+        // Remove strictly controlled bindings to map purely Cartesian logic natively
+        props.remove("type");
+        props.remove("waterlogged");
+        props.remove("lavalogged");
+        props.remove("snowy");
 
-        for (String type : new String[]{"bottom", "top", "double"}) {
-          String newKeyWlTrue = key.isEmpty() ? "type=" + type + ",waterlogged=true" : key + ",type=" + type + ",waterlogged=true";
-          String newKeyWlFalse = key.isEmpty() ? "type=" + type + ",waterlogged=false" : key + ",type=" + type + ",waterlogged=false";
-
+        for (String type : types) {
           JsonElement newVariantData = transformVariantData(variantData, targetId, type);
-          newVariants.add(newKeyWlTrue, newVariantData);
-          newVariants.add(newKeyWlFalse, newVariantData);
+          
+          for (String wl : bools) {
+            Map<String, String> merged = new HashMap<>(props);
+            merged.put("type", type);
+            merged.put("waterlogged", wl);
+            
+            String newKey = merged.entrySet().stream()
+                .sorted(Map.Entry.comparingByKey())
+                .map(e -> e.getKey() + "=" + e.getValue())
+                .collect(Collectors.joining(","));
+                
+            newVariants.add(newKey, newVariantData);
+          }
         }
       }
       newState.add("variants", newVariants);
+      
     } else if (originalState.has("multipart")) {
       JsonArray newMultipart = new JsonArray();
       JsonArray multipart = originalState.getAsJsonArray("multipart");
@@ -250,11 +273,11 @@ public class PtsDynamicPackEngine {
           JsonObject newPart = part.deepCopy();
           JsonObject newWhen = new JsonObject();
           JsonArray andArray = new JsonArray();
-
+          
           JsonObject typeCond = new JsonObject();
           typeCond.addProperty("type", type);
           andArray.add(typeCond);
-
+          
           if (part.has("when")) {
             andArray.add(part.getAsJsonObject("when"));
           }
@@ -311,7 +334,7 @@ public class PtsDynamicPackEngine {
 
     String newModelName = targetId.getNamespace() + "_" + modelId.getPath().replace("/", "_") + "_" + type;
 
-    JsonObject slicedModel = resolveAndSliceModel(modelId, type);
+    JsonObject slicedModel = resolveAndSliceModel(modelId, type, targetId);
     if (slicedModel != null) {
       Path modelsDir = PACK_DIR.resolve("assets/" + PtsMod.MODID + "/models/block");
       Files.createDirectories(modelsDir);
@@ -330,12 +353,20 @@ public class PtsDynamicPackEngine {
    * @param type slab type
    * @return the complete sliced model JSON, or {@code null} if the model could not be loaded
    */
-  private static JsonObject resolveAndSliceModel(ResourceLocation baseModelId, String type) {
+  private static JsonObject resolveAndSliceModel(ResourceLocation baseModelId, String type, ResourceLocation targetId) {
     JsonObject flattened = flattenModel(baseModelId);
     if (flattened == null) return null;
 
     JsonObject sliced = flattened.deepCopy();
+    
+    // Explicitly add cutout layer bounds globally to correctly solve Z-fighting on identically positioned side-texture overlays natively.
+    if (!sliced.has("render_type")) {
+      sliced.addProperty("render_type", "minecraft:cutout_mipped");
+    }
+
     if (!sliced.has("elements")) return sliced;
+
+    boolean isGrassLike = targetId.getPath().contains("grass") || targetId.getPath().contains("podzol") || targetId.getPath().contains("mycelium") || targetId.getPath().contains("nylium") || targetId.getPath().contains("snow");
 
     JsonArray elements = sliced.getAsJsonArray("elements");
     JsonArray newElements = new JsonArray();
@@ -373,6 +404,20 @@ public class PtsDynamicPackEngine {
         JsonObject faces = el.getAsJsonObject("faces");
         for (String faceName : faces.keySet()) {
           JsonObject face = faces.getAsJsonObject(faceName);
+          
+          if (face.has("cullface")) {
+            String cull = face.get("cullface").getAsString();
+            boolean remove = false;
+            if (cull.equals("down") && minY > 0.001f) remove = true;
+            if (cull.equals("up") && maxY < 15.999f) remove = true;
+            if (cull.equals("north") && newFrom.get(2).getAsFloat() > 0.001f) remove = true;
+            if (cull.equals("south") && newTo.get(2).getAsFloat() < 15.999f) remove = true;
+            if (cull.equals("west") && newFrom.get(0).getAsFloat() > 0.001f) remove = true;
+            if (cull.equals("east") && newTo.get(0).getAsFloat() < 15.999f) remove = true;
+            
+            if (remove) face.remove("cullface");
+          }
+
           if (faceName.equals("north") || faceName.equals("south") || faceName.equals("east") || faceName.equals("west")) {
             JsonArray uv;
             if (face.has("uv")) {
@@ -381,19 +426,31 @@ public class PtsDynamicPackEngine {
               uv = new JsonArray();
               uv.add(0); uv.add(0); uv.add(16); uv.add(16);
             }
+            
             float u1 = uv.get(0).getAsFloat();
             float v1 = uv.get(1).getAsFloat();
             float u2 = uv.get(2).getAsFloat();
             float v2 = uv.get(3).getAsFloat();
 
             if (type.equals("bottom")) {
-              v1 = v1 + (v2 - v1) * 0.5f;
+              if (isGrassLike) {
+                v2 = v1 + (v2 - v1) * 0.5f;
+              } else {
+                v1 = v1 + (v2 - v1) * 0.5f;
+              }
             } else if (type.equals("top")) {
-              v2 = v1 + (v2 - v1) * 0.5f;
+              if (isGrassLike) {
+                v1 = v1 + (v2 - v1) * 0.5f;
+              } else {
+                v2 = v1 + (v2 - v1) * 0.5f;
+              }
             }
 
             JsonArray newUv = new JsonArray();
-            newUv.add(u1); newUv.add(v1); newUv.add(u2); newUv.add(v2);
+            newUv.add(u1 == (int)u1 ? (int)u1 : u1);
+            newUv.add(v1 == (int)v1 ? (int)v1 : v1);
+            newUv.add(u2 == (int)u2 ? (int)u2 : u2);
+            newUv.add(v2 == (int)v2 ? (int)v2 : v2);
             face.add("uv", newUv);
           }
         }
@@ -428,6 +485,9 @@ public class PtsDynamicPackEngine {
         for (String k : tex.keySet()) {
           if (!textures.has(k)) textures.add(k, tex.get(k));
         }
+      }
+      if (!result.has("render_type") && step.has("render_type")) {
+        result.add("render_type", step.get("render_type"));
       }
       if (elements == null && step.has("elements")) {
         elements = step.getAsJsonArray("elements").deepCopy();
