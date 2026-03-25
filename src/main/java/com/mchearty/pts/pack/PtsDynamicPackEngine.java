@@ -7,75 +7,117 @@ import com.google.gson.JsonParser;
 import com.mchearty.pts.PtsMod;
 import com.mchearty.pts.config.PtsConfigService;
 import net.minecraft.SharedConstants;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.packs.PackType;
-import net.minecraft.tags.TagKey;
 import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.Blocks;
 import net.neoforged.fml.ModList;
 import net.neoforged.fml.loading.FMLPaths;
-import net.neoforged.neoforgespi.locating.IModFileInfo;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.BufferedWriter;
-import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.Reader;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
 /**
- * Robust JSON Pipeline deriving slab bounds and textures directly from true model parameters.
+ * Runtime resource-pack engine that procedurally generates Minecraft assets for
+ * smoothed-slab variants of target terrain blocks.
  *
- * <p>Generates a complete runtime resource pack containing blockstate definitions,
- * sliced block models (UV and geometry transformed for bottom/top slabs), loot
- * tables, and dynamic tag copies. The pack is rebuilt only when configuration
- * changes.
+ * <p>This class is the single source of truth for all dynamic assets created by the
+ * Procedural Terrain Smoothing (PTS) mod. It reads original block models and blockstates
+ * from any mod (including vanilla), slices the geometry at the 8/16 block height to
+ * produce bottom/top/double slabs, adjusts UV coordinates on side faces, and emits
+ * complete blockstate JSON, model JSON, loot tables, and block tags. Assets are written
+ * into a temporary pack directory under the config folder and are regenerated only when
+ * the PTS configuration hash changes.
+ *
+ * <p>All file-system and JSON operations are performed with JDK 21 {@code var} inference
+ * to eliminate any dependency on internal NeoForge SPI packages that change between
+ * loader builds. The engine is fully thread-safe for mod-initialization but performs
+ * all heavy work on the main thread during world load.
+ *
+ * @see PtsConfigService#calculateConfigHash()
+ * @see PtsMod
  */
 public class PtsDynamicPackEngine {
-
   private static final Logger LOGGER = LoggerFactory.getLogger(PtsDynamicPackEngine.class);
-  /** Root directory of the generated runtime pack inside the config folder. */
+
+  /** Root directory for the generated runtime resource pack. */
   public static final Path PACK_DIR = FMLPaths.CONFIGDIR.get().resolve("pts_generated_pack");
+
+  /** File that stores the configuration hash to skip unnecessary rebuilds. */
   private static final Path HASH_FILE = PACK_DIR.resolve("config.hash");
 
-  /** Maps original tag locations to the set of PTS slab IDs that should be included. */
+  /**
+   * In-memory mapping of block tags to the smoothed-slab variants that should be
+   * included in them. Populated by {@link #addTagMapping(ResourceLocation, ResourceLocation)}
+   * during block registration and flushed to JSON by {@link #generateDynamicTags()}.
+   */
   private static final Map<ResourceLocation, Set<ResourceLocation>> PENDING_TAGS = new HashMap<>();
 
   /**
-   * Records that a PTS slab should be added to the given tag.
+   * Registers a smoothed slab to be added to the given block tag at pack-generation time.
    *
-   * @param tagLoc the tag resource location
-   * @param slabId the PTS slab ID
+   * @param tagLoc the resource location of the tag (e.g. {@code minecraft:slabs})
+   * @param slabId the resource location of the generated slab block
    */
   public static void addTagMapping(ResourceLocation tagLoc, ResourceLocation slabId) {
     PENDING_TAGS.computeIfAbsent(tagLoc, k -> new HashSet<>()).add(slabId);
   }
 
   /**
-   * Ensures the runtime pack directory exists.
+   * Ensures the runtime pack directory exists. Idempotent and safe to call multiple times.
    */
   public static void initializePackDirectory() {
     try {
-      if (!Files.exists(PACK_DIR)) Files.createDirectories(PACK_DIR);
-    } catch (Exception ignored) {}
+      if (!Files.exists(PACK_DIR)) {
+        Files.createDirectories(PACK_DIR);
+      }
+    } catch (Exception ignored) {
+      // Directory creation failure is non-fatal; generation will simply be skipped later.
+    }
   }
 
+  /**
+   * Writes a string as UTF-8 JSON to the given path, overwriting any existing file.
+   *
+   * @param path the target file path
+   * @param content the complete JSON string
+   * @throws Exception if an I/O error occurs
+   */
   private static void writeJson(Path path, String content) throws Exception {
     try (BufferedWriter writer = Files.newBufferedWriter(path)) {
       writer.write(content);
     }
   }
 
+  /**
+   * Reads a JSON asset (blockstate or model) from either a loaded mod file or the
+   * mod's own classpath resources.
+   *
+   * <p>Uses {@code var} inference to avoid version-specific NeoForge internal imports.
+   *
+   * @param id the resource location of the asset
+   * @param type either {@code "blockstates"} or {@code "models"}
+   * @return the parsed {@link JsonObject} or {@code null} if the asset is missing
+   */
   private static JsonObject readJson(ResourceLocation id, String type) {
     String path = "assets/" + id.getNamespace() + "/" + type + "/" + id.getPath() + ".json";
-    IModFileInfo info = ModList.get().getModFileById(id.getNamespace());
+
+    // Extracted via `var` to bypass moving internal SPI interface package paths across versions
+    var info = ModList.get().getModFileById(id.getNamespace());
     if (info != null) {
       Path resPath = info.getFile().findResource(path.split("/"));
       if (Files.exists(resPath)) {
@@ -95,10 +137,13 @@ public class PtsDynamicPackEngine {
   }
 
   /**
-   * Generates or updates the entire runtime resource pack if the configuration
-   * hash has changed.
+   * Generates or updates the entire runtime resource pack if the PTS configuration
+   * has changed since the last run.
    *
-   * @param targetIds set of original blocks that received PTS slabs
+   * <p>This is the main entry point called from mod initialization after all target
+   * blocks have been registered.
+   *
+   * @param targetIds the set of original block IDs for which smoothed slabs should be generated
    */
   public static void generateOrUpdateRuntimePack(Set<ResourceLocation> targetIds) {
     try {
@@ -141,6 +186,14 @@ public class PtsDynamicPackEngine {
     }
   }
 
+  /**
+   * Deletes and recreates the pack directory, ensuring the new pack is completely clean.
+   *
+   * <p>Contains a safety guard that prevents accidental deletion of directories outside
+   * the Minecraft config folder.
+   *
+   * @throws Exception if an I/O error occurs or the safety check fails
+   */
   private static void rebuildPackDirectory() throws Exception {
     if (!PACK_DIR.normalize().startsWith(FMLPaths.CONFIGDIR.get().normalize())) {
       throw new IllegalStateException("PTS: Unsafe pack directory path detected. Aborting deletion.");
@@ -157,6 +210,14 @@ public class PtsDynamicPackEngine {
     Files.createDirectories(PACK_DIR);
   }
 
+  /**
+   * Transforms the original blockstate JSON of a target block into a complete blockstate
+   * definition that includes waterlogged variants of bottom/top/double slabs.
+   *
+   * @param targetId original block identifier
+   * @param slabName generated slab block name (without namespace)
+   * @throws Exception if JSON writing fails
+   */
   private static void transformBlockstate(ResourceLocation targetId, String slabName) throws Exception {
     JsonObject originalState = readJson(targetId, "blockstates");
     if (originalState == null) return;
@@ -211,6 +272,16 @@ public class PtsDynamicPackEngine {
     writeJson(statesDir.resolve(slabName + ".json"), newState.toString());
   }
 
+  /**
+   * Transforms a single variant (or array of variants) by replacing its model reference
+   * with a newly sliced PTS model.
+   *
+   * @param data the original variant JSON element
+   * @param targetId the original block being sliced
+   * @param type slab type ("bottom", "top", or "double")
+   * @return transformed variant element
+   * @throws Exception if model slicing or writing fails
+   */
   private static JsonElement transformVariantData(JsonElement data, ResourceLocation targetId, String type) throws Exception {
     if (data.isJsonArray()) {
       JsonArray arr = new JsonArray();
@@ -223,6 +294,16 @@ public class PtsDynamicPackEngine {
     }
   }
 
+  /**
+   * Processes a single variant object: resolves its model, slices it, writes the new model
+   * to the runtime pack, and updates the model reference.
+   *
+   * @param variant the original variant JSON
+   * @param targetId original block ID
+   * @param type slab type
+   * @return updated variant JSON
+   * @throws Exception if model operations fail
+   */
   private static JsonObject transformSingleVariant(JsonObject variant, ResourceLocation targetId, String type) throws Exception {
     JsonObject newVariant = variant.deepCopy();
     String modelStr = variant.get("model").getAsString();
@@ -241,6 +322,14 @@ public class PtsDynamicPackEngine {
     return newVariant;
   }
 
+  /**
+   * Loads a model (following parent hierarchy) and slices its elements for the requested
+   * slab type, also adjusting side-face UVs so the texture appears continuous across the cut.
+   *
+   * @param baseModelId the original model to slice
+   * @param type slab type
+   * @return the complete sliced model JSON, or {@code null} if the model could not be loaded
+   */
   private static JsonObject resolveAndSliceModel(ResourceLocation baseModelId, String type) {
     JsonObject flattened = flattenModel(baseModelId);
     if (flattened == null) return null;
@@ -315,6 +404,14 @@ public class PtsDynamicPackEngine {
     return sliced;
   }
 
+  /**
+   * Flattens a model hierarchy by walking the {@code parent} chain and merging
+   * textures and elements. Stops at {@code minecraft:block/block} or a {@code builtin/}
+   * parent to prevent infinite recursion.
+   *
+   * @param modelId the root model to flatten
+   * @return a self-contained model JSON with merged textures and elements, or {@code null}
+   */
   private static JsonObject flattenModel(ResourceLocation modelId) {
     JsonObject current = readJson(modelId, "models");
     if (current == null) return null;
@@ -372,18 +469,32 @@ public class PtsDynamicPackEngine {
     return result;
   }
 
+  /**
+   * Writes all pending block-tag mappings collected via {@link #addTagMapping} into
+   * the runtime pack's {@code data/.../tags/block/...} directory.
+   *
+   * @throws Exception if any tag file cannot be written
+   */
   private static void generateDynamicTags() throws Exception {
     for (Map.Entry<ResourceLocation, Set<ResourceLocation>> entry : PENDING_TAGS.entrySet()) {
       ResourceLocation tagLoc = entry.getKey();
       Path tagPath = PACK_DIR.resolve("data/" + tagLoc.getNamespace() + "/tags/block/" + tagLoc.getPath() + ".json");
       Files.createDirectories(tagPath.getParent());
 
-      java.util.List<String> values = entry.getValue().stream().map(loc -> "\"" + loc.toString() + "\"").toList();
+      List<String> values = entry.getValue().stream().map(loc -> "\"" + loc.toString() + "\"").toList();
       String tagJson = "{\n  \"replace\": false,\n  \"values\":[\n    " + String.join(",\n    ", values) + "\n  ]\n}";
       writeJson(tagPath, tagJson);
     }
   }
 
+  /**
+   * Generates identical loot tables for both modern and legacy folder layouts so the
+   * slab drops two items when broken in the double state.
+   *
+   * @param target original block being replaced
+   * @param slabName name of the generated slab block
+   * @throws Exception if writing fails
+   */
   private static void generateLootTable(ResourceLocation target, String slabName) throws Exception {
     Path lootDirModern = PACK_DIR.resolve("data/" + PtsMod.MODID + "/loot_table/blocks");
     Path lootDirLegacy = PACK_DIR.resolve("data/" + PtsMod.MODID + "/loot_tables/blocks");

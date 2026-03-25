@@ -44,30 +44,35 @@ import org.jetbrains.annotations.Nullable;
 import java.util.Optional;
 
 /**
- * A dynamically generated slab that perfectly mirrors the visual, physical, and
- * behavioral properties of a target terrain block.
+ * A dynamic slab block that perfectly emulates the visual, physical, and behavioral
+ * properties of a target terrain block while adding smooth-slab geometry and full
+ * waterlogging support.
  *
- * <p>Uses runtime JSON model slicing for accurate geometry and UVs, copies all
- * blockstate properties, and delegates most behavior (sound, friction,
- * explosion resistance, etc.) to the original block. Supports waterlogging and
- * falling-block physics when the target implements {@link Fallable}.
+ * <p>Instances are created via the factory {@link #create(Block, ResourceLocation)} which
+ * captures the target block for property copying. The slab inherits explosion resistance,
+ * friction, sound, destruction progress, plant sustainability, random ticking, falling
+ * behavior, and more from the original block. It also implements {@link LiquidBlockContainer}
+ * and {@link BucketPickup} for seamless water interaction.
  */
 public class PtsTerrainSlabBlock extends SlabBlock implements LiquidBlockContainer, BucketPickup {
-
   private static final Optional<SoundEvent> PICKUP_SOUND = Optional.of(SoundEvents.BUCKET_FILL);
 
-  /** Thread-local used during construction to access the target block safely. */
+  /**
+   * Thread-local used only during block construction to pass the target block to
+   * {@link #createBlockStateDefinition(StateDefinition.Builder)} without polluting
+   * the constructor signature.
+   */
   private static final ThreadLocal<Block> CURRENT_TARGET = new ThreadLocal<>();
 
   private final ResourceLocation targetId;
   private Block cachedTarget;
 
   /**
-   * Factory method that creates a new PTS slab for the supplied target block.
+   * Factory method that creates a new slab instance for the given target block.
    *
-   * @param target the original terrain block to mirror
-   * @param id the registry ID of the target (used for lazy lookup)
-   * @return a fully initialized {@code PtsTerrainSlabBlock}
+   * @param target the original terrain block to emulate
+   * @param id the registry name that will be used for the slab
+   * @return a fully configured {@link PtsTerrainSlabBlock}
    */
   public static PtsTerrainSlabBlock create(Block target, ResourceLocation id) {
     CURRENT_TARGET.set(target);
@@ -96,6 +101,7 @@ public class PtsTerrainSlabBlock extends SlabBlock implements LiquidBlockContain
     this.registerDefaultState(baseState);
   }
 
+  @SuppressWarnings("unchecked")
   private <T extends Comparable<T>> BlockState applyProperty(BlockState state, Property<T> prop, Comparable<?> value) {
     return state.setValue(prop, (T) value);
   }
@@ -109,16 +115,16 @@ public class PtsTerrainSlabBlock extends SlabBlock implements LiquidBlockContain
         if (prop != BlockStateProperties.WATERLOGGED && prop != BlockStateProperties.SLAB_TYPE) {
           try {
             builder.add(prop);
-          } catch (IllegalArgumentException ignored) {} // Ignore if already added
+          } catch (IllegalArgumentException ignored) {}
         }
       }
     }
   }
 
   /**
-   * Returns the original block this slab mirrors.
+   * Returns the original block that this slab is emulating.
    *
-   * @return the target block, or {@link Blocks#AIR} if lookup fails
+   * @return the target block (never {@code null})
    */
   public Block getTargetBlock() {
     if (cachedTarget == null) cachedTarget = BuiltInRegistries.BLOCK.get(targetId);

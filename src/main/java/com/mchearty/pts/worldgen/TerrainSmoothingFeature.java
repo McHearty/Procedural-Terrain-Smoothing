@@ -1,6 +1,7 @@
 package com.mchearty.pts.worldgen;
 
 import com.mchearty.pts.block.ModBlocks;
+import com.mchearty.pts.block.PtsTerrainSlabBlock;
 import com.mchearty.pts.config.PtsConfigService;
 import com.mojang.serialization.Codec;
 import net.minecraft.core.BlockPos;
@@ -21,23 +22,28 @@ import net.minecraft.world.level.material.Fluids;
 import java.util.Objects;
 
 /**
- * Worldgen feature that procedurally inserts PTS slabs into air or water blocks
- * directly above or below eligible terrain surfaces, creating smooth transitions.
+ * World-generation feature that converts flat terrain faces into procedurally
+ * smoothed slabs according to the PTS configuration.
  *
- * <p>Respects configuration for edge-conversion probability and corner generation.
- * Copies all blockstate properties from the mirrored target block.
+ * <p>Scans every column in a chunk, detects air or water source blocks directly
+ * above or below a smoothing-target block, and replaces them with the appropriate
+ * bottom or top slab. The feature respects the {@code EDGE_CONVERSION_PERCENT}
+ * probability and optionally generates corner slabs when {@code GENERATE_CORNERS}
+ * is enabled. All property copying from the original block is performed safely
+ * to preserve grass/snow/age/etc. states.
  */
 public class TerrainSmoothingFeature extends Feature<NoneFeatureConfiguration> {
 
   /**
-   * @param codec the feature codec
+   * Constructs the feature with the required codec.
+   *
+   * @param codec codec for {@link NoneFeatureConfiguration}
    */
   public TerrainSmoothingFeature(Codec<NoneFeatureConfiguration> codec) {
     super(codec);
   }
 
   @Override
-  @SuppressWarnings("unchecked")
   public boolean place(FeaturePlaceContext<NoneFeatureConfiguration> context) {
     WorldGenLevel level = context.level();
 
@@ -79,11 +85,7 @@ public class TerrainSmoothingFeature extends Feature<NoneFeatureConfiguration> {
                         .setValue(SlabBlock.TYPE, SlabType.BOTTOM)
                         .setValue(SlabBlock.WATERLOGGED, isWater);
 
-                    for (Property<?> prop : belowState.getProperties()) {
-                      if (newSlab.hasProperty(prop) && prop != SlabBlock.TYPE && prop != SlabBlock.WATERLOGGED) {
-                        newSlab = newSlab.setValue((Property) prop, belowState.getValue(prop));
-                      }
-                    }
+                    newSlab = copyPropertiesSafe(belowState, newSlab);
 
                     level.setBlock(pos, newSlab, Block.UPDATE_CLIENTS | Block.UPDATE_KNOWN_SHAPE);
                     continue;
@@ -103,11 +105,7 @@ public class TerrainSmoothingFeature extends Feature<NoneFeatureConfiguration> {
                       .setValue(SlabBlock.TYPE, SlabType.TOP)
                       .setValue(SlabBlock.WATERLOGGED, isWater);
 
-                  for (Property<?> prop : aboveState.getProperties()) {
-                    if (newSlab.hasProperty(prop) && prop != SlabBlock.TYPE && prop != SlabBlock.WATERLOGGED) {
-                      newSlab = newSlab.setValue((Property) prop, aboveState.getValue(prop));
-                    }
-                  }
+                  newSlab = copyPropertiesSafe(aboveState, newSlab);
 
                   level.setBlock(pos, newSlab, Block.UPDATE_CLIENTS | Block.UPDATE_KNOWN_SHAPE);
                 }
@@ -120,11 +118,46 @@ public class TerrainSmoothingFeature extends Feature<NoneFeatureConfiguration> {
     return true;
   }
 
+  /**
+   * Copies all non-slab-specific properties from the source block state to the target
+   * slab state.
+   *
+   * @param source the original block state
+   * @param target the freshly created slab state
+   * @return the target state with copied properties
+   */
+  @SuppressWarnings({"unchecked", "rawtypes"})
+  private BlockState copyPropertiesSafe(BlockState source, BlockState target) {
+    BlockState result = target;
+    for (Property<?> prop : source.getProperties()) {
+      if (result.hasProperty(prop) && prop != SlabBlock.TYPE && prop != SlabBlock.WATERLOGGED) {
+        result = result.setValue((Property) prop, source.getValue(prop));
+      }
+    }
+    return result;
+  }
+
+  /**
+   * Determines whether the current position should receive a slab based on the
+   * configured edge-conversion probability.
+   *
+   * @param anchor a representative block position used to seed the deterministic hash
+   * @return {@code true} if a slab should be placed at this location
+   */
   private boolean passesErodeFilter(BlockPos anchor) {
     int hash = Objects.hash(anchor.getX(), anchor.getY(), anchor.getZ());
     return Math.floorMod(hash, 100) < PtsConfigService.EDGE_CONVERSION_PERCENT;
   }
 
+  /**
+   * Locates a suitable "plateau anchor" block in the cardinal (and optionally diagonal)
+   * directions that can serve as the reference for the smoothing operation.
+   *
+   * @param level the world
+   * @param origin the air/water position being replaced
+   * @param target the block type we are smoothing
+   * @return a valid anchor position or {@code null} if none was found
+   */
   private BlockPos getPlateauAnchor(WorldGenLevel level, BlockPos origin, Block target) {
     int matches = 0;
     BlockPos anchor = null;
@@ -159,6 +192,14 @@ public class TerrainSmoothingFeature extends Feature<NoneFeatureConfiguration> {
     return null;
   }
 
+  /**
+   * Checks that the two blocks directly above the replacement position are either
+   * air or a water source, ensuring the slab will not be placed inside solid terrain.
+   *
+   * @param level the world
+   * @param pos the position being replaced
+   * @return {@code true} if vertical clearance exists
+   */
   private boolean hasVerticalClearance(WorldGenLevel level, BlockPos pos) {
     BlockPos above1Pos = pos.above();
     BlockState above1 = level.getBlockState(above1Pos);
