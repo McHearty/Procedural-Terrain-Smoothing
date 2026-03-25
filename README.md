@@ -79,4 +79,3 @@ PTS is designed to work alongside other mods that add or modify terrain blocks. 
 ---
 
 **License:** MIT (see LICENSE file)
-```
