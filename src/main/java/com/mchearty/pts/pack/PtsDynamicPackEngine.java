@@ -219,6 +219,9 @@ public class PtsDynamicPackEngine {
     JsonObject originalState = readJson(targetId, "blockstates");
     if (originalState == null) return;
 
+    boolean isTinted = targetId.getPath().contains("grass");
+    boolean isFringe = isTinted || targetId.getPath().contains("snow");
+
     JsonObject newState = new JsonObject();
     if (originalState.has("variants")) {
       JsonObject newVariants = new JsonObject();
@@ -241,11 +244,9 @@ public class PtsDynamicPackEngine {
         // Remove strictly controlled bindings to map purely Cartesian logic natively
         props.remove("type");
         props.remove("waterlogged");
-        props.remove("lavalogged");
-        props.remove("snowy");
 
         for (String type : types) {
-          JsonElement newVariantData = transformVariantData(variantData, targetId, type);
+          JsonElement newVariantData = transformVariantData(variantData, targetId, type, isTinted, isFringe);
           
           for (String wl : bools) {
             Map<String, String> merged = new HashMap<>(props);
@@ -283,7 +284,7 @@ public class PtsDynamicPackEngine {
           }
           newWhen.add("AND", andArray);
           newPart.add("when", newWhen);
-          newPart.add("apply", transformVariantData(part.get("apply"), targetId, type));
+          newPart.add("apply", transformVariantData(part.get("apply"), targetId, type, isTinted, isFringe));
           newMultipart.add(newPart);
         }
       }
@@ -305,15 +306,15 @@ public class PtsDynamicPackEngine {
    * @return transformed variant element
    * @throws Exception if model slicing or writing fails
    */
-  private static JsonElement transformVariantData(JsonElement data, ResourceLocation targetId, String type) throws Exception {
+  private static JsonElement transformVariantData(JsonElement data, ResourceLocation targetId, String type, boolean isTinted, boolean isFringe) throws Exception {
     if (data.isJsonArray()) {
       JsonArray arr = new JsonArray();
       for (JsonElement el : data.getAsJsonArray()) {
-        arr.add(transformSingleVariant(el.getAsJsonObject(), targetId, type));
+        arr.add(transformSingleVariant(el.getAsJsonObject(), targetId, type, isTinted, isFringe));
       }
       return arr;
     } else {
-      return transformSingleVariant(data.getAsJsonObject(), targetId, type);
+      return transformSingleVariant(data.getAsJsonObject(), targetId, type, isTinted, isFringe);
     }
   }
 
@@ -327,14 +328,14 @@ public class PtsDynamicPackEngine {
    * @return updated variant JSON
    * @throws Exception if model operations fail
    */
-  private static JsonObject transformSingleVariant(JsonObject variant, ResourceLocation targetId, String type) throws Exception {
+  private static JsonObject transformSingleVariant(JsonObject variant, ResourceLocation targetId, String type, boolean isTinted, boolean isFringe) throws Exception {
     JsonObject newVariant = variant.deepCopy();
     String modelStr = variant.get("model").getAsString();
     ResourceLocation modelId = ResourceLocation.parse(modelStr.contains(":") ? modelStr : "minecraft:" + modelStr);
 
     String newModelName = targetId.getNamespace() + "_" + modelId.getPath().replace("/", "_") + "_" + type;
 
-    JsonObject slicedModel = resolveAndSliceModel(modelId, type, targetId);
+    JsonObject slicedModel = resolveAndSliceModel(modelId, type, isTinted, isFringe);
     if (slicedModel != null) {
       Path modelsDir = PACK_DIR.resolve("assets/" + PtsMod.MODID + "/models/block");
       Files.createDirectories(modelsDir);
@@ -342,6 +343,12 @@ public class PtsDynamicPackEngine {
     }
 
     newVariant.addProperty("model", PtsMod.MODID + ":block/" + newModelName);
+
+    if (!type.equals("double")) {
+      if (newVariant.has("x")) newVariant.remove("x");
+      if (newVariant.has("z")) newVariant.remove("z");
+    }
+
     return newVariant;
   }
 
@@ -353,7 +360,7 @@ public class PtsDynamicPackEngine {
    * @param type slab type
    * @return the complete sliced model JSON, or {@code null} if the model could not be loaded
    */
-  private static JsonObject resolveAndSliceModel(ResourceLocation baseModelId, String type, ResourceLocation targetId) {
+  private static JsonObject resolveAndSliceModel(ResourceLocation baseModelId, String type, boolean isTinted, boolean isFringe) {
     JsonObject flattened = flattenModel(baseModelId);
     if (flattened == null) return null;
 
@@ -366,8 +373,6 @@ public class PtsDynamicPackEngine {
 
     if (!sliced.has("elements")) return sliced;
 
-    boolean isGrassLike = targetId.getPath().contains("grass") || targetId.getPath().contains("podzol") || targetId.getPath().contains("mycelium") || targetId.getPath().contains("nylium") || targetId.getPath().contains("snow");
-
     JsonArray elements = sliced.getAsJsonArray("elements");
     JsonArray newElements = new JsonArray();
 
@@ -376,8 +381,11 @@ public class PtsDynamicPackEngine {
       JsonArray from = el.getAsJsonArray("from");
       JsonArray to = el.getAsJsonArray("to");
 
-      float minY = from.get(1).getAsFloat();
-      float maxY = to.get(1).getAsFloat();
+      float origMinY = from.get(1).getAsFloat();
+      float origMaxY = to.get(1).getAsFloat();
+
+      float minY = origMinY;
+      float maxY = origMaxY;
 
       if (type.equals("bottom")) {
         maxY = Math.min(maxY, 8.0f);
@@ -404,7 +412,14 @@ public class PtsDynamicPackEngine {
         JsonObject faces = el.getAsJsonObject("faces");
         for (String faceName : faces.keySet()) {
           JsonObject face = faces.getAsJsonObject(faceName);
+          boolean isOverlay = face.has("texture") && face.get("texture").getAsString().contains("overlay");
           
+          if (isTinted) {
+            if (faceName.equals("up") || isOverlay) {
+              face.addProperty("tintindex", 0);
+            }
+          }
+
           if (face.has("cullface")) {
             String cull = face.get("cullface").getAsString();
             boolean remove = false;
@@ -419,39 +434,38 @@ public class PtsDynamicPackEngine {
           }
 
           if (faceName.equals("north") || faceName.equals("south") || faceName.equals("east") || faceName.equals("west")) {
-            JsonArray uv;
-            if (face.has("uv")) {
-              uv = face.getAsJsonArray("uv");
-            } else {
-              uv = new JsonArray();
-              uv.add(0); uv.add(0); uv.add(16); uv.add(16);
-            }
-            
-            float u1 = uv.get(0).getAsFloat();
-            float v1 = uv.get(1).getAsFloat();
-            float u2 = uv.get(2).getAsFloat();
-            float v2 = uv.get(3).getAsFloat();
-
-            if (type.equals("bottom")) {
-              if (isGrassLike) {
-                v2 = v1 + (v2 - v1) * 0.5f;
+            boolean hasUv = face.has("uv");
+            if (hasUv || isFringe) {
+              float u1 = 0, v1 = 0, u2 = 16, v2 = 16;
+              if (hasUv) {
+                JsonArray uv = face.getAsJsonArray("uv");
+                u1 = uv.get(0).getAsFloat();
+                v1 = uv.get(1).getAsFloat();
+                u2 = uv.get(2).getAsFloat();
+                v2 = uv.get(3).getAsFloat();
               } else {
-                v1 = v1 + (v2 - v1) * 0.5f;
+                v1 = 16.0f - origMaxY;
+                v2 = 16.0f - origMinY;
               }
-            } else if (type.equals("top")) {
-              if (isGrassLike) {
-                v1 = v1 + (v2 - v1) * 0.5f;
-              } else {
-                v2 = v1 + (v2 - v1) * 0.5f;
-              }
-            }
 
-            JsonArray newUv = new JsonArray();
-            newUv.add(u1 == (int)u1 ? (int)u1 : u1);
-            newUv.add(v1 == (int)v1 ? (int)v1 : v1);
-            newUv.add(u2 == (int)u2 ? (int)u2 : u2);
-            newUv.add(v2 == (int)v2 ? (int)v2 : v2);
-            face.add("uv", newUv);
+              float vHeight = v2 - v1;
+              float newV1, newV2;
+
+              if (isFringe) {
+                newV1 = v1;
+                newV2 = v1 + vHeight * ((maxY - minY) / (origMaxY - origMinY));
+              } else {
+                newV1 = v1 + vHeight * ((origMaxY - maxY) / (origMaxY - origMinY));
+                newV2 = v2 - vHeight * ((minY - origMinY) / (origMaxY - origMinY));
+              }
+
+              JsonArray newUv = new JsonArray();
+              newUv.add(u1 == (int)u1 ? (int)u1 : u1);
+              newUv.add(newV1 == (int)newV1 ? (int)newV1 : newV1);
+              newUv.add(u2 == (int)u2 ? (int)u2 : u2);
+              newUv.add(newV2 == (int)newV2 ? (int)newV2 : newV2);
+              face.add("uv", newUv);
+            }
           }
         }
       }
@@ -549,7 +563,7 @@ public class PtsDynamicPackEngine {
 
   /**
    * Generates identical loot tables for both modern and legacy folder layouts so the
-   * slab drops two items when broken in the double state.
+   * slab drops the parent block, and drops two when broken in the double state.
    *
    * @param target original block being replaced
    * @param slabName name of the generated slab block
@@ -558,6 +572,7 @@ public class PtsDynamicPackEngine {
   private static void generateLootTable(ResourceLocation target, String slabName) throws Exception {
     Path lootDirModern = PACK_DIR.resolve("data/" + PtsMod.MODID + "/loot_table/blocks");
     Path lootDirLegacy = PACK_DIR.resolve("data/" + PtsMod.MODID + "/loot_tables/blocks");
+
     Files.createDirectories(lootDirModern);
     Files.createDirectories(lootDirLegacy);
 
@@ -568,19 +583,29 @@ public class PtsDynamicPackEngine {
             "rolls": 1,
             "entries":[ {
               "type": "minecraft:item",
-              "name": "%3$s:%4$s",
+              "name": "%1$s:%2$s",
               "functions":[ {
                 "function": "minecraft:set_count",
-                "conditions":[ { "condition": "minecraft:block_state_property", "block": "%3$s:%4$s", "properties": { "type": "double" } } ],
+                "conditions":[ {
+                  "condition": "minecraft:block_state_property",
+                  "block": "%3$s:%4$s",
+                  "properties": { "type": "double" }
+                } ],
                 "count": 2,
                 "add": false
               } ]
             } ],
             "conditions":[ { "condition": "minecraft:survives_explosion" } ]
           } ]
-        }""".formatted(target.getNamespace(), target.getPath(), PtsMod.MODID, slabName);
+        }""".formatted(
+            target.getNamespace(),  // %1$s → parent namespace
+            target.getPath(),       // %2$s → parent block
+            PtsMod.MODID,           // %3$s → slab namespace
+            slabName                // %4$s → slab name
+        );
 
-    writeJson(lootDirModern.resolve(slabName + ".json"), lootJson);
-    writeJson(lootDirLegacy.resolve(slabName + ".json"), lootJson);
+    for (Path dir : java.util.List.of(lootDirModern, lootDirLegacy)) {
+      writeJson(dir.resolve(slabName + ".json"), lootJson);
+    }
   }
 }

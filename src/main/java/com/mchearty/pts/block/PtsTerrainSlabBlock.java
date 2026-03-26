@@ -298,6 +298,24 @@ public class PtsTerrainSlabBlock extends SlabBlock implements LiquidBlockContain
     if (getTargetBlock() instanceof Fallable) {
       level.scheduleTick(currentPos, this, 2);
     }
+
+    Block target = getTargetBlock();
+    if (target != Blocks.AIR) {
+      BlockState targetState = target.defaultBlockState();
+      for (Property<?> prop : state.getProperties()) {
+        if (targetState.hasProperty(prop)) {
+          targetState = applyProperty(targetState, prop, state.getValue(prop));
+        }
+      }
+
+      BlockState updatedTarget = targetState.updateShape(facing, facingState, level, currentPos, facingPos);
+      for (Property<?> prop : updatedTarget.getProperties()) {
+        if (state.hasProperty(prop) && prop != TYPE && prop != WATERLOGGED) {
+          state = applyProperty(state, prop, updatedTarget.getValue(prop));
+        }
+      }
+    }
+
     return super.updateShape(state, facing, facingState, level, currentPos, facingPos);
   }
 

@@ -18,6 +18,8 @@ import net.minecraft.server.packs.repository.PackSource;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.block.state.properties.Property;
 import net.neoforged.api.distmarker.Dist;
 import net.neoforged.bus.api.EventPriority;
 import net.neoforged.bus.api.IEventBus;
@@ -113,6 +115,10 @@ public class PtsMod {
    * the original target block's tinting logic.
    */
   public static class PtsClient {
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private static BlockState applyPropertyUnsafe(BlockState state, Property prop, Comparable value) {
+      return state.setValue(prop, value);
+    }
 
   /**
    * Registers block color handlers for every PTS-generated slab.
@@ -130,24 +136,20 @@ public class PtsMod {
         Block target = slab.getTargetBlock();
         if (target != Blocks.AIR) {
           event.register((state, level, pos, tintIndex) -> {
-            if (level != null && pos != null) {
-              return event.getBlockColors().getColor(target.defaultBlockState(), level, pos, tintIndex);
+
+            BlockState targetState = target.defaultBlockState();
+            for (Property<?> prop : state.getProperties()) {
+              if (targetState.hasProperty(prop)) {
+                targetState = applyPropertyUnsafe(targetState, prop, state.getValue(prop));
+              }
             }
-            return -1;
+
+            return event.getBlockColors().getColor(targetState, level, pos, tintIndex);
           }, slab);
         }
       }
     }
 
-  /**
-   * Registers item color handlers for every PTS-generated slab item.
-   *
-   * <p>Delegates item tint queries to the target block's item color provider so that
-   * slabs appear with the correct color when held in the inventory, displayed in
-   * item frames, or rendered in GUIs.
-   *
-   * @param event the Forge/NeoForge item color registration event
-   */
     public static void onItemColors(RegisterColorHandlersEvent.Item event) {
       for (PtsTerrainSlabBlock slab : SlabMirrorFactory.PENDING_SLABS.values()) {
         Block target = slab.getTargetBlock();
