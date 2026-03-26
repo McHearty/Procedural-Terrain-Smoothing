@@ -17,6 +17,7 @@ import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.item.context.BlockPlaceContext;
 import net.minecraft.world.item.context.DirectionalPlaceContext;
+import net.minecraft.world.level.BlockAndTintGetter;
 import net.minecraft.world.level.BlockGetter;
 import net.minecraft.world.level.Explosion;
 import net.minecraft.world.level.Level;
@@ -331,5 +332,20 @@ public class PtsTerrainSlabBlock extends SlabBlock implements LiquidBlockContain
         FallingBlockEntity.fall(level, pos, fallingState);
       }
     }
+  }
+
+  @Override
+  public BlockState getAppearance(BlockState state, BlockAndTintGetter level, BlockPos pos, Direction side, @Nullable BlockState queryState, @Nullable BlockPos queryPos) {
+    Block target = getTargetBlock();
+    if (target != Blocks.AIR) {
+      BlockState targetState = target.defaultBlockState();
+      for (Property<?> prop : state.getProperties()) {
+        if (targetState.hasProperty(prop)) {
+          targetState = applyProperty(targetState, prop, state.getValue(prop));
+        }
+      }
+      return targetState;
+    }
+    return state;
   }
 }

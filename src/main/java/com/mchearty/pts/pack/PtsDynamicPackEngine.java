@@ -169,6 +169,7 @@ public class PtsDynamicPackEngine {
         try {
           transformBlockstate(targetId, slabName);
           generateLootTable(targetId, slabName);
+          generateItemModel(targetId, slabName);
           count++;
         } catch (Exception e) {
           LOGGER.error("PTS: Failed to process block data for {}", targetId, e);
@@ -607,5 +608,15 @@ public class PtsDynamicPackEngine {
     for (Path dir : java.util.List.of(lootDirModern, lootDirLegacy)) {
       writeJson(dir.resolve(slabName + ".json"), lootJson);
     }
+  }
+
+  private static void generateItemModel(ResourceLocation target, String slabName) throws Exception {
+    Path itemDir = PACK_DIR.resolve("assets/" + PtsMod.MODID + "/models/item");
+    Files.createDirectories(itemDir);
+    String itemJson = """
+        {
+          "parent": "%1$s:item/%2$s"
+        }""".formatted(target.getNamespace(), target.getPath());
+    writeJson(itemDir.resolve(slabName + ".json"), itemJson);
   }
 }
