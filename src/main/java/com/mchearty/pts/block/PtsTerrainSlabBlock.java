@@ -39,6 +39,7 @@ import net.minecraft.world.level.block.state.properties.SlabType;
 import net.minecraft.world.level.material.Fluid;
 import net.minecraft.world.level.material.FluidState;
 import net.minecraft.world.level.material.Fluids;
+import net.minecraft.world.level.material.MapColor;
 import net.neoforged.neoforge.common.util.TriState;
 import org.jetbrains.annotations.Nullable;
 
@@ -347,5 +348,20 @@ public class PtsTerrainSlabBlock extends SlabBlock implements LiquidBlockContain
       return targetState;
     }
     return state;
+  }
+
+  @Override
+  public MapColor getMapColor(BlockState state, BlockGetter level, BlockPos pos, MapColor defaultColor) {
+    Block target = getTargetBlock();
+    if (target != Blocks.AIR) {
+      BlockState targetState = target.defaultBlockState();
+      for (Property<?> prop : state.getProperties()) {
+        if (targetState.hasProperty(prop)) {
+          targetState = applyProperty(targetState, prop, state.getValue(prop));
+        }
+      }
+      return targetState.getMapColor(level, pos);
+    }
+    return super.getMapColor(state, level, pos, defaultColor);
   }
 }

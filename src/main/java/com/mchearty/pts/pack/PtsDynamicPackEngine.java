@@ -165,7 +165,7 @@ public class PtsDynamicPackEngine {
       int count = 0;
 
       for (ResourceLocation targetId : targetIds) {
-        String slabName = targetId.getNamespace() + "_" + targetId.getPath() + "_smoothed_slab";
+        String slabName = targetId.getPath() + "_smoothed_slab";
         try {
           transformBlockstate(targetId, slabName);
           generateLootTable(targetId, slabName);
@@ -292,7 +292,7 @@ public class PtsDynamicPackEngine {
       newState.add("multipart", newMultipart);
     }
 
-    Path statesDir = PACK_DIR.resolve("assets/" + PtsMod.MODID + "/blockstates");
+    Path statesDir = PACK_DIR.resolve("assets/" + targetId.getNamespace() + "/blockstates");
     Files.createDirectories(statesDir);
     writeJson(statesDir.resolve(slabName + ".json"), newState.toString());
   }
@@ -338,12 +338,12 @@ public class PtsDynamicPackEngine {
 
     JsonObject slicedModel = resolveAndSliceModel(modelId, type, isTinted, isFringe);
     if (slicedModel != null) {
-      Path modelsDir = PACK_DIR.resolve("assets/" + PtsMod.MODID + "/models/block");
+      Path modelsDir = PACK_DIR.resolve("assets/" + targetId.getNamespace() + "/models/block");
       Files.createDirectories(modelsDir);
       writeJson(modelsDir.resolve(newModelName + ".json"), slicedModel.toString());
     }
 
-    newVariant.addProperty("model", PtsMod.MODID + ":block/" + newModelName);
+    newVariant.addProperty("model", targetId.getNamespace() + ":block/" + newModelName);
 
     if (!type.equals("double")) {
       if (newVariant.has("x")) newVariant.remove("x");
@@ -571,8 +571,8 @@ public class PtsDynamicPackEngine {
    * @throws Exception if writing fails
    */
   private static void generateLootTable(ResourceLocation target, String slabName) throws Exception {
-    Path lootDirModern = PACK_DIR.resolve("data/" + PtsMod.MODID + "/loot_table/blocks");
-    Path lootDirLegacy = PACK_DIR.resolve("data/" + PtsMod.MODID + "/loot_tables/blocks");
+    Path lootDirModern = PACK_DIR.resolve("data/" + target.getNamespace() + "/loot_table/blocks");
+    Path lootDirLegacy = PACK_DIR.resolve("data/" + target.getNamespace() + "/loot_tables/blocks");
 
     Files.createDirectories(lootDirModern);
     Files.createDirectories(lootDirLegacy);
@@ -601,7 +601,7 @@ public class PtsDynamicPackEngine {
         }""".formatted(
             target.getNamespace(),  // %1$s → parent namespace
             target.getPath(),       // %2$s → parent block
-            PtsMod.MODID,           // %3$s → slab namespace
+            target.getNamespace(),           // %3$s → slab namespace
             slabName                // %4$s → slab name
         );
 
@@ -611,7 +611,7 @@ public class PtsDynamicPackEngine {
   }
 
   private static void generateItemModel(ResourceLocation target, String slabName) throws Exception {
-    Path itemDir = PACK_DIR.resolve("assets/" + PtsMod.MODID + "/models/item");
+    Path itemDir = PACK_DIR.resolve("assets/" + target.getNamespace() + "/models/item");
     Files.createDirectories(itemDir);
     String itemJson = """
         {

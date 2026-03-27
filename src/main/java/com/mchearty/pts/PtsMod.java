@@ -8,6 +8,7 @@ import com.mchearty.pts.pack.PtsDynamicPackEngine;
 import com.mchearty.pts.registry.ModFeatures;
 import com.mchearty.pts.registry.SlabMirrorFactory;
 import net.minecraft.network.chat.Component;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.packs.PackLocationInfo;
 import net.minecraft.server.packs.PackSelectionConfig;
@@ -27,6 +28,7 @@ import net.neoforged.fml.common.Mod;
 import net.neoforged.fml.loading.FMLEnvironment;
 import net.neoforged.neoforge.client.event.RegisterColorHandlersEvent;
 import net.neoforged.neoforge.event.AddPackFindersEvent;
+import net.neoforged.fml.event.lifecycle.InterModEnqueueEvent;
 
 import java.util.Optional;
 import java.util.Set;
@@ -67,6 +69,7 @@ public class PtsMod {
     modEventBus.addListener(this::onPackFinder);
     modEventBus.addListener(ModBlocks::setupCache);
     modEventBus.addListener(PtsDataGen::gatherData);
+    modEventBus.addListener(this::enqueueIMC);
 
     if (FMLEnvironment.dist == Dist.CLIENT) {
       modEventBus.addListener(PtsClient::onBlockColors);
@@ -74,6 +77,32 @@ public class PtsMod {
     }
 
     ModFeatures.FEATURES.register(modEventBus);
+  }
+
+  private void enqueueIMC(InterModEnqueueEvent event) {
+    try {
+      // Attempt to natively push parent block definitions to the Distant Horizons API
+      Class<?> api = Class.forName("com.seibel.distanthorizons.api.DistantHorizonsAPI");
+      Object manager = api.getMethod("getOverrideManager").invoke(null);
+      java.lang.reflect.Method addAlias = manager.getClass().getMethod("addBlockAlias", String.class, String.class);
+      
+      for (PtsTerrainSlabBlock slab : SlabMirrorFactory.PENDING_SLABS.values()) {
+        ResourceLocation targetId = BuiltInRegistries.BLOCK.getKey(slab.getTargetBlock());
+        ResourceLocation slabId = BuiltInRegistries.BLOCK.getKey(slab);
+        if (slabId != null && targetId != null) {
+          addAlias.invoke(manager, slabId.toString(), targetId.toString());
+        }
+      }
+    } catch (Throwable ignored) {
+      // Fallback to standard NeoForge IMC dispatch if direct DH API has shifted or is missing
+      for (PtsTerrainSlabBlock slab : SlabMirrorFactory.PENDING_SLABS.values()) {
+        ResourceLocation targetId = BuiltInRegistries.BLOCK.getKey(slab.getTargetBlock());
+        ResourceLocation slabId = BuiltInRegistries.BLOCK.getKey(slab);
+        if (slabId != null && targetId != null) {
+          net.neoforged.fml.InterModComms.sendTo("distanthorizons", "block_alias", () -> slabId.toString() + "=" + targetId.toString());
+        }
+      }
+    }
   }
 
   /**
@@ -132,6 +161,7 @@ public class PtsMod {
    * @param event the Forge/NeoForge block color registration event
    */
     public static void onBlockColors(RegisterColorHandlersEvent.Block event) {
+      var blockColors = event.getBlockColors();
       for (PtsTerrainSlabBlock slab : SlabMirrorFactory.PENDING_SLABS.values()) {
         Block target = slab.getTargetBlock();
         if (target != Blocks.AIR) {
@@ -144,18 +174,28 @@ public class PtsMod {
               }
             }
 
-            return event.getBlockColors().getColor(targetState, level, pos, tintIndex);
+            int color = -1;
+            try {
+              color = blockColors.getColor(targetState, level, pos, tintIndex);
+            } catch (Exception ignored) {}
+            
+            if (color == -1 && level != null) {
+              color = blockColors.getColor(targetState, null, null, tintIndex);
+            }
+            
+            return color;
           }, slab);
         }
       }
     }
 
     public static void onItemColors(RegisterColorHandlersEvent.Item event) {
+      var itemColors = event.getItemColors();
       for (PtsTerrainSlabBlock slab : SlabMirrorFactory.PENDING_SLABS.values()) {
         Block target = slab.getTargetBlock();
         if (target != Blocks.AIR) {
           event.register((stack, tintIndex) -> {
-            return event.getItemColors().getColor(new ItemStack(target), tintIndex);
+            return itemColors.getColor(new ItemStack(target), tintIndex);
           }, slab.asItem());
         }
       }

@@ -71,8 +71,8 @@ public class SlabMirrorFactory {
           if (ModBlocks.isValidForSmoothing(baseState)) {
             PtsTerrainSlabBlock slab = PtsTerrainSlabBlock.create(target, id);
 
-            ResourceLocation slabId = ResourceLocation.fromNamespaceAndPath(PtsMod.MODID,
-                id.getNamespace() + "_" + id.getPath() + "_smoothed_slab");
+            ResourceLocation slabId = ResourceLocation.fromNamespaceAndPath(id.getNamespace(),
+                id.getPath() + "_smoothed_slab");
 
             event.register(Registries.BLOCK, slabId, () -> slab);
             PENDING_SLABS.put(id, slab);
@@ -110,8 +110,8 @@ public class SlabMirrorFactory {
 
     for (Map.Entry<ResourceLocation, PtsTerrainSlabBlock> entry : PENDING_SLABS.entrySet()) {
       ResourceLocation id = entry.getKey();
-      ResourceLocation slabId = ResourceLocation.fromNamespaceAndPath(PtsMod.MODID,
-          id.getNamespace() + "_" + id.getPath() + "_smoothed_slab");
+      ResourceLocation slabId = ResourceLocation.fromNamespaceAndPath(id.getNamespace(),
+          id.getPath() + "_smoothed_slab");
 
       event.register(Registries.ITEM, slabId, () -> new BlockItem(entry.getValue(), new Item.Properties()));
     }

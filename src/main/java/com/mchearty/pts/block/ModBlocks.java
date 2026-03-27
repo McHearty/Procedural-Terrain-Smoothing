@@ -8,6 +8,7 @@ import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.SlabBlock;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.phys.shapes.Shapes;
 import net.minecraft.world.phys.shapes.VoxelShape;
 import net.neoforged.fml.event.lifecycle.FMLCommonSetupEvent;
 
@@ -54,20 +55,44 @@ public class ModBlocks {
    * @return {@code true} if the block may be replaced by a PTS slab
    */
   public static boolean isValidForSmoothing(BlockState state) {
-    if (state.hasBlockEntity()) return false;
-    if (state.isSignalSource()) return false;
-    if (!state.getFluidState().isEmpty()) return false;
-    if (state.getDestroySpeed(EmptyBlockGetter.INSTANCE, BlockPos.ZERO) < 0) return false;
+    // 1. Prevent BlockState exponential memory explosions. 
+    // A target block with >4 properties causes massive state matrix permutations 
+    // when generating its slab equivalent, leading to OutOfMemoryErrors in modpacks.
+    if (state.getProperties().size() > 4) return false;
 
-    VoxelShape shape = state.getCollisionShape(EmptyBlockGetter.INSTANCE, BlockPos.ZERO);
-    if (shape.isEmpty()) return false;
-    if (shape.toAabbs().size() != 1) return false;
+    // 2. Fast-fail classes to bypass expensive model logic and shape lookups completely
+    Block block = state.getBlock();
+    if (block instanceof net.minecraft.world.level.block.SlabBlock ||
+        block instanceof net.minecraft.world.level.block.StairBlock ||
+        block instanceof net.minecraft.world.level.block.FenceBlock ||
+        block instanceof net.minecraft.world.level.block.WallBlock ||
+        block instanceof net.minecraft.world.level.block.TrapDoorBlock ||
+        block instanceof net.minecraft.world.level.block.DoorBlock) {
+      return false;
+    }
 
-    if (shape.max(Direction.Axis.Y) < 0.5) return false;
-    if (shape.max(Direction.Axis.X) - shape.min(Direction.Axis.X) < 1.0) return false;
-    if (shape.max(Direction.Axis.Z) - shape.min(Direction.Axis.Z) < 1.0) return false;
+    try {
+      VoxelShape shape = state.getCollisionShape(EmptyBlockGetter.INSTANCE, BlockPos.ZERO);
+      
+      // 3. O(1) allocation-free check for 99% of full terrain blocks
+      if (shape == Shapes.block()) {
+        return true;
+      }
 
-    return true;
+      if (shape.isEmpty()) return false;
+      if (shape.max(Direction.Axis.Y) < 0.5) return false;
+      if (shape.max(Direction.Axis.X) - shape.min(Direction.Axis.X) < 1.0) return false;
+      if (shape.max(Direction.Axis.Z) - shape.min(Direction.Axis.Z) < 1.0) return false;
+
+      // 4. Fallback: Defer AABB list allocation strictly to partial terrain blocks (e.g. Dirt Paths)
+      if (shape.toAabbs().size() != 1) return false;
+
+      return true;
+    } catch (Exception e) {
+      // Catch poorly written mod blocks that throw NullPointerExceptions or OutOfMemoryErrors 
+      // when queried with an EmptyBlockGetter fake world context.
+      return false;
+    }
   }
 
   /**
